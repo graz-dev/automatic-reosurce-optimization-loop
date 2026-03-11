@@ -16,7 +16,7 @@ metadata:
   name: k6-load-test
   namespace: microservices-demo
 spec:
-  backoffLimit: 1
+  backoffLimit: 0
   template:
     spec:
       nodeSelector:
@@ -25,7 +25,11 @@ spec:
       containers:
         - name: k6
           image: grafana/k6:0.51.0
-          args: ["run", "/scripts/script.js"]
+          # Loop indefinitely: each cycle is CYCLE_MINUTES long.
+          # k6 exit code is ignored (|| true) so threshold violations
+          # during warmup don't kill the job.
+          command: ["sh", "-c"]
+          args: ["while true; do k6 run /scripts/script.js || true; done"]
           env:
             - name: BASE_URL
               value: "http://petclinic.microservices-demo:8080"

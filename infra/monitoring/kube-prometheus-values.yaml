@@ -26,7 +26,16 @@ prometheus:
 grafana:
   enabled: true
   adminPassword: "admin"
-  defaultDashboardsEnabled: true
+  defaultDashboardsEnabled: false   # show only the petclinic dashboard
+  service:
+    type: NodePort
+    nodePort: 30000
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: monitoring
 
 # Disable AlertManager for the demo to reduce resource usage
 alertmanager:

@@ -110,6 +110,17 @@ helm upgrade --install kube-prometheus-stack \
   --values infra/monitoring/kube-prometheus-values.yaml \
   --wait --timeout 10m
 
+# ── 4a. Grafana dashboard (auto-provisioned via sidecar ConfigMap) ─────────────
+# Grafana's sidecar watches for ConfigMaps labelled grafana_dashboard=1 in the
+# monitoring namespace and hot-loads them — no manual import required.
+log "Provisioning PetClinic Grafana dashboard…"
+kubectl create configmap petclinic-dashboard \
+  --from-file=petclinic-dashboard.json=infra/monitoring/petclinic-dashboard.json \
+  --namespace "${NS_MONITORING}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl label configmap petclinic-dashboard grafana_dashboard=1 \
+  --namespace "${NS_MONITORING}" --overwrite
+
 # ── 5. OpenTelemetry Collector ─────────────────────────────────────────────────
 log "Deploying OpenTelemetry Collector…"
 kubectl apply -f infra/monitoring/otel-collector.yaml
@@ -170,8 +181,8 @@ echo ""
 echo "  # Prometheus UI"
 echo "  kubectl port-forward -n ${NS_MONITORING} svc/kube-prometheus-stack-prometheus 9090:9090"
 echo ""
-echo "  # Grafana UI  (admin / admin)"
-echo "  kubectl port-forward -n ${NS_MONITORING} svc/kube-prometheus-stack-grafana 3000:80"
+echo "  # Grafana UI — no port-forward needed (NodePort via Kind)"
+echo "  open http://localhost:3000   # admin / admin"
 echo ""
 echo "  # Watch optimizer logs"
 echo "  kubectl logs -n ${NS_MONITORING} -l app=resource-optimizer --tail=50 -f"

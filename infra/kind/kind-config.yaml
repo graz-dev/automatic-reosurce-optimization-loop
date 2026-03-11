@@ -10,6 +10,11 @@ name: resource-optimizer
 nodes:
   - role: control-plane
     image: kindest/node:v1.32.0
+    extraPortMappings:
+      # Grafana — http://localhost:3000 (NodePort 30000)
+      - containerPort: 30000
+        hostPort: 3000
+        protocol: TCP
 
   # Worker for the target application (Spring PetClinic)
   - role: worker

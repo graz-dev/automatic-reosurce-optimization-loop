@@ -393,7 +393,7 @@ def _patch_manifest(content: str, decision: dict, is_java: bool) -> str:
     return buf.getvalue()
 
 
-def open_github_pr(decision: dict, is_java: bool) -> str:
+def open_github_pr(decision: dict, is_java: bool, metrics: dict) -> str:
     """Commit the updated manifest to a new branch and open a PR.
     Returns the PR URL."""
     if not GITHUB_TOKEN or not GITHUB_REPO:
@@ -430,6 +430,13 @@ def open_github_pr(decision: dict, is_java: bool) -> str:
         if is_java and decision.get("max_heap_mib") else ""
     )
     headroom = diag.get("headroom_pct", "—")
+
+    jvm_diag = ""
+    if is_java and decision.get("max_heap_mib"):
+        heap_mb    = round(metrics.get("heap_mb", 0))
+        offheap_mb = round(metrics.get("offheap_mb", 0))
+        jvm_diag = f"\nHeap observed:   {heap_mb} MiB\nOff-heap:        {offheap_mb} MiB"
+
     body = f"""\
 ## Resource resize — `{TARGET_DEPLOYMENT}`
 
@@ -441,7 +448,7 @@ def open_github_pr(decision: dict, is_java: bool) -> str:
 ### Diagnostics
 ```
 CPU observed:    {diag.get('cpu_observed_m')} m      delta: {diag.get('cpu_delta_pct')} %
-Memory observed: {diag.get('mem_observed_mib')} MiB  delta: {diag.get('mem_delta_pct')} %
+Memory observed: {diag.get('mem_observed_mib')} MiB  delta: {diag.get('mem_delta_pct')} %{jvm_diag}
 Analysis window: {ANALYSIS_WINDOW}
 Headroom:        {headroom} %
 ```
@@ -505,7 +512,7 @@ def main() -> None:
         log.info("[DRY RUN] Would open PR with:\n%s", json.dumps(decision, indent=2))
         return
 
-    pr_url = open_github_pr(decision, is_java)
+    pr_url = open_github_pr(decision, is_java, metrics)
     log.info("PR opened: %s", pr_url)
     log.info("Resource Optimizer done.")
 
