@@ -80,6 +80,24 @@ log "Creating namespaces…"
 kubectl create namespace "${NS_APP}"        --dry-run=client -o yaml | kubectl apply -f -
 kubectl create namespace "${NS_MONITORING}" --dry-run=client -o yaml | kubectl apply -f -
 
+# ── 3a. GitHub secret for the optimizer PR ────────────────────────────────────
+if [[ -f "gh-token.key" ]]; then
+  log "Creating optimizer-github secret from gh-token.key…"
+  GH_TOKEN=$(tr -d '[:space:]' < gh-token.key)
+  GH_REPO=$(git remote get-url origin 2>/dev/null \
+    | sed -E 's|.*github\.com[:/]([^/]+/[^.]+)(\.git)?.*|\1|')
+  kubectl create secret generic optimizer-github \
+    --from-literal=token="${GH_TOKEN}" \
+    --from-literal=repo="${GH_REPO}" \
+    --namespace "${NS_MONITORING}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  log "Secret optimizer-github created (repo=${GH_REPO})."
+else
+  warn "gh-token.key not found — skipping optimizer-github secret."
+  warn "Create it manually before the CronJob runs:"
+  warn "  kubectl create secret generic optimizer-github --from-literal=token=<PAT> --from-literal=repo=<owner/repo> -n ${NS_MONITORING}"
+fi
+
 # ── 4. kube-prometheus-stack (Helm) ────────────────────────────────────────────
 log "Adding Helm repos…"
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
@@ -118,7 +136,6 @@ kubectl apply -f infra/opa/opa-deployment.yaml
 log "Deploying Spring PetClinic…"
 kubectl apply -f app/namespace.yaml
 kubectl apply -f app/petclinic.yaml
-kubectl apply -f app/petclinic-hpa.yaml
 
 # ── 8. K6 load test ───────────────────────────────────────────────────────────
 log "Uploading K6 diurnal test script…"

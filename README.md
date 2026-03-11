@@ -2,121 +2,93 @@
 
 A closed-loop system that continuously right-sizes Kubernetes workload resources
 by observing real metrics, evaluating them through an OPA policy engine, and
-patching the target Deployment — all without manual intervention.
+opening a **GitOps pull request** with the updated manifest — no manual
+intervention, no direct cluster patching.
 
-```
-┌──────────────┐  OTLP/HTTP  ┌─────────────────┐  scrape  ┌────────────┐
-│  PetClinic   │────────────▶│  OTel Collector  │─────────▶│ Prometheus │
-│  (JVM app)   │             │  (monitoring ns) │          └─────┬──────┘
-└──────────────┘             └─────────────────┘                │ query
-                                                                 ▼
-                                                     ┌───────────────────┐
-                                                     │   optimizer.py    │
-                                                     │   (CronJob/5min)  │
-                                                     └────────┬──────────┘
-                                                              │ POST /v1/data
-                                                              ▼
-                                                     ┌────────────────┐
-                                                     │      OPA       │
-                                                     │ resources.rego │
-                                                     └────────┬───────┘
-                                                              │ decision
-                                                              ▼
-                                                   kubectl patch deployment
-```
+---
 
 ## How it works
 
 | Step | Component | What happens |
 |------|-----------|--------------|
-| 1 | **PetClinic + OTel agent** | The Java application exports JVM and HTTP metrics to the OTel Collector via OTLP/HTTP every 5 s |
-| 2 | **OTel Collector** | Receives OTLP metrics and re-exposes them as a Prometheus scrape endpoint on port 8889 |
-| 3 | **Prometheus** | Scrapes the OTel Collector every 15 s; stores CPU and memory time-series |
-| 4 | **optimizer.py** | Every 5 minutes queries Prometheus for P95 CPU cores and P95 memory (MiB) |
-| 5 | **Workload detection** | Inspects the Deployment's image name and env vars to determine whether the workload is a JVM application (adds 15 % JVM off-heap overhead) |
-| 6 | **OPA policy** | Receives `{metrics, current_limits, is_java, policy_config}` and returns recommended limits with headroom. A resize is only triggered when the delta exceeds 10 % |
-| 7 | **kubectl patch** | If OPA returns `action=resize`, the optimizer patches the Deployment in-place |
+| **0** | **OPA policy read** | The optimizer fetches workload coordinates (`namespace`, `deployment`, `container`, `manifest_path`) and all sizing knobs from the per-workload Rego file. The CronJob carries **no workload-specific config** beyond `WORKLOAD=petclinic`. |
+| **1** | **Deployment inspection** | The Kubernetes API is queried for the current resource limits and to detect JVM workloads (by image name or env vars such as `JDK_JAVA_OPTIONS`). |
+| **2** | **Prometheus metrics** | For JVM workloads: `jvm_memory_used_bytes` heap and non-heap are queried separately; total = heap + off-heap. For generic workloads: `container_memory_working_set_bytes`. CPU is P95 over the `ANALYSIS_WINDOW`. |
+| **3** | **OPA decision** | The per-workload Rego endpoint (`/v1/data/resource/workloads/{name}/result`) injects the `policy_config` from the Rego file and delegates to the master sizing engine. Python sends only observational data — never policy knobs. |
+| **4** | **GitHub PR** | If OPA returns `action=resize`, the optimizer creates a branch, patches the manifest with `ruamel.yaml` (comment-preserving, surgical diff), and opens a PR with a diagnostics table. |
+
+---
 
 ## Repository layout
 
 ```
 .
-├── setup.sh                          # One-shot cluster bootstrap
-├── infra/
-│   ├── kind/kind-config.yaml         # 3-node Kind cluster definition
-│   ├── monitoring/
-│   │   ├── kube-prometheus-values.yaml  # Prometheus + Grafana Helm values
-│   │   └── otel-collector.yaml          # OTel Collector Deployment + Service
-│   └── opa/
-│       └── opa-deployment.yaml          # OPA server Deployment + Service
+├── setup.sh                                 # One-shot cluster bootstrap (./setup.sh | --teardown)
 ├── app/
-│   ├── namespace.yaml                # microservices-demo namespace
-│   ├── petclinic.yaml                # OTel-instrumented Spring PetClinic
-│   ├── petclinic-hpa.yaml            # HPA (replica scaling, CPU target 50 %)
+│   ├── namespace.yaml
+│   ├── petclinic.yaml                       # OTel-instrumented Spring PetClinic
 │   └── load-test/
-│       ├── k6-diurnal.js             # K6 diurnal load test (sine-wave shape)
-│       └── k6-job.yaml               # Kubernetes Job that runs the test
+│       ├── k6-diurnal.js                    # Sine-wave 10-min diurnal load test
+│       └── k6-job.yaml
+├── infra/
+│   ├── kind/kind-config.yaml                # 3-node Kind cluster (pinned v1.32.0)
+│   ├── monitoring/
+│   │   ├── kube-prometheus-values.yaml      # Prometheus + Grafana Helm values
+│   │   └── otel-collector.yaml             # OTLP receiver → Prometheus exporter
+│   └── opa/
+│       └── opa-deployment.yaml              # OPA REST server + initContainer fix
 └── optimizer/
-    ├── optimizer.py                  # Python optimizer bot
+    ├── optimizer.py                         # Python orchestrator (Steps 0–4)
     ├── policy/
-    │   └── resources.rego            # OPA Rego policy
+    │   ├── resources.rego                   # Master sizing engine  *** DO NOT EDIT ***
+    │   └── workloads/
+    │       └── petclinic.rego               # Per-workload knobs (SRE-managed)
     └── k8s/
-        ├── rbac.yaml                 # ServiceAccount + ClusterRole
-        └── cronjob.yaml              # CronJob (every 5 min)
+        ├── rbac.yaml                        # ServiceAccount + ClusterRole
+        └── cronjob.yaml                     # CronJob every 30 min
 ```
+
+---
 
 ## Prerequisites
 
-| Tool | Version tested | Install |
-|------|----------------|---------|
-| Docker | ≥ 24 | https://docs.docker.com/get-docker/ |
-| Kind | ≥ 0.23 | `brew install kind` |
-| kubectl | ≥ 1.29 | `brew install kubectl` |
-| Helm | ≥ 3.14 | `brew install helm` |
+| Tool | Version tested |
+|------|----------------|
+| Docker | ≥ 24 |
+| Kind | ≥ 0.23 |
+| kubectl | ≥ 1.29 |
+| Helm | ≥ 3.14 |
+
+```bash
+brew install kind kubectl helm
+```
+
+---
 
 ## Quick start
 
 ```bash
-# Clone the repo
-git clone https://github.com/graz-dev/automatic-resource-optimization-loop.git
-cd automatic-resource-optimization-loop
+git clone https://github.com/graz-dev/automatic-reosurce-optimization-loop.git
+cd automatic-reosurce-optimization-loop
 
-# Bootstrap everything (cluster + infra + app + optimizer)
-chmod +x setup.sh
-./setup.sh
+# (Optional) GitHub PR support — create a PAT with repo scope
+echo "ghp_yourtoken" > gh-token.key   # ignored by .gitignore
+
+# Bootstrap everything
+chmod +x setup.sh && ./setup.sh
 ```
 
-`setup.sh` performs the following steps automatically:
+`setup.sh` does in order:
 
-1. Creates a local Docker registry on `localhost:5001`
+1. Starts a local Docker registry on `localhost:5001`
 2. Creates a 3-node Kind cluster (`resource-optimizer`) with node role labels
-3. Installs `kube-prometheus-stack` via Helm into the `monitoring` namespace
-4. Deploys the OpenTelemetry Collector
-5. Deploys OPA and uploads the Rego policy from `optimizer/policy/resources.rego`
-6. Deploys Spring PetClinic with OTel instrumentation
-7. Creates the K6 ConfigMap and launches the diurnal load test Job
-8. Deploys the optimizer RBAC and CronJob
-
-### Access the UIs
-
-```bash
-# Prometheus (http://localhost:9090)
-kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
-
-# Grafana (http://localhost:3000 — admin / admin)
-kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
-```
-
-### Watch the optimizer in action
-
-```bash
-# Tail live optimizer logs (runs every 5 minutes)
-kubectl logs -n monitoring -l app=resource-optimizer --tail=80 -f
-
-# Observe resource limit changes on the Deployment
-kubectl get deployment petclinic -n microservices-demo -o \
-  jsonpath='{.spec.template.spec.containers[0].resources}' | jq .
-```
+3. Creates `optimizer-github` Secret from `gh-token.key` (if present)
+4. Installs `kube-prometheus-stack` via Helm into `monitoring`
+5. Deploys the OpenTelemetry Collector
+6. Deploys OPA; builds the `opa-policies` ConfigMap from all `*.rego` files
+7. Deploys Spring PetClinic into `microservices-demo`
+8. Launches the K6 diurnal load test Job
+9. Deploys the optimizer RBAC, ConfigMap, and CronJob
 
 ### Tear down
 
@@ -124,79 +96,313 @@ kubectl get deployment petclinic -n microservices-demo -o \
 ./setup.sh --teardown
 ```
 
+### Access the UIs
+
+```bash
+# Prometheus  →  http://localhost:9090
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+
+# Grafana  →  http://localhost:3000  (admin / admin)
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+```
+
+### Trigger the optimizer manually
+
+```bash
+kubectl create job -n monitoring --from=cronjob/resource-optimizer optimizer-manual-1
+
+# Follow logs
+kubectl logs -n monitoring -l job-name=optimizer-manual-1 -f
+```
+
 ---
 
-## Component details
+## Implementation details
 
-### Load test — K6 diurnal pattern
+### OPA policy architecture — two-layer design
 
-`app/load-test/k6-diurnal.js` compresses a 24-hour traffic cycle into
-**10 minutes** (configurable via `CYCLE_MINUTES`).
+The policy is split into two layers so that **the platform team owns the
+engine** and **each application team owns its knobs**.
 
-Traffic shape is defined by anchors that represent real-world hours:
+```
+optimizer/policy/
+├── resources.rego          # Master engine — platform team, never edited by SREs
+└── workloads/
+    └── petclinic.rego      # Workload policy — application/SRE team
+```
 
-| Real hour | Load |
-|-----------|------|
-| 00:00–06:00 | 5 % (night trough) |
-| 06:00–09:00 | Ramp up |
-| 09:00–12:00 | 100 % (morning peak) |
-| 12:00–14:00 | 60 % (midday dip) |
-| 14:00–17:00 | 100 % (afternoon peak) |
-| 17:00–20:00 | Ramp down |
-| 20:00–24:00 | 5 % (night trough) |
+**`resources.rego` — master sizing engine**
 
-A **sine-wave interpolation** is applied between every pair of anchors so that
-transitions are smooth and the resulting CPU/memory oscillations look realistic
-rather than step-shaped.
+Implements the full sizing algorithm. Receives observational input from Python
+and `policy_config` injected by the workload Rego via `with`:
 
-### OPA policy — `optimizer/policy/resources.rego`
+```
+headroom factor  = 1 + headroom_pct / 100
+rec_cpu_m        = round(cpu_cores × 1000 × headroom)
+rec_mem_mib      = round(total_mem_mb × headroom)
+safe_*           = clamp(rec_*, min, max)          # safety bounds
+max_heap_mib     = min(safe_mem, heap_mb × headroom)  # JVM only
+action = "resize" when cpu_delta_pct > delta_threshold_pct
+                    OR mem_delta_pct > delta_threshold_pct
+```
 
-The policy receives:
+**`workloads/petclinic.rego` — per-workload policy**
 
-```json
-{
-  "input": {
-    "metrics":        { "cpu_cores": 0.45, "mem_mb": 480 },
-    "current_limits": { "cpu": "2000m", "mem": "2Gi" },
-    "is_java":        true,
-    "policy_config":  { "headroom_multiplier": 1.2 }
-  }
+The only file an SRE touches to onboard or tune a workload:
+
+```rego
+policy_config = {
+    "target": {
+        "namespace":     "microservices-demo",
+        "deployment":    "petclinic",
+        "container":     "petclinic",
+        "manifest_path": "app/petclinic.yaml",
+    },
+    "headroom_pct":        10,   # +10 % above P95 observed usage
+    "delta_threshold_pct": 10,   # ignore changes < 10 %
+    "cpu_min_m":   100,  "cpu_max_m":   8000,
+    "mem_min_mib": 128,  "mem_max_mib": 8192,
+    "requests_cpu_ratio": 0.5,   # request = 50 % of limit
+    "requests_mem_ratio": 0.7,
+}
+
+result = r {
+    r = data.resource.optimizer.result with input.policy_config as policy_config
 }
 ```
 
-And returns:
+The Rego `with` keyword injects `policy_config` at evaluation time without
+modifying the master rule, keeping the engine and the knobs strictly separated.
 
-```json
-{
-  "result": {
-    "action": "resize",
-    "new_limits":   { "cpu": "621m",  "memory": "663Mi" },
-    "new_requests": { "cpu": "310m",  "memory": "464Mi" },
-    "diagnostics":  { "cpu_delta_pct": 69, "mem_delta_pct": 68, ... }
-  }
-}
+### JVM-aware sizing
+
+For JVM workloads the optimizer fetches **real heap and non-heap metrics** from
+Prometheus instead of applying a hardcoded overhead factor:
+
+```
+Container limit  = (heap_observed + offheap_observed) × headroom
+-Xmx             = heap_observed × headroom
 ```
 
-Key policy rules:
-- **Java overhead**: adds 15 % to recommended memory to account for JVM off-heap
-- **Headroom multiplier**: applied on top of P95 observed usage (default 1.2×)
-- **Noise filter**: resize is only triggered when CPU or memory delta exceeds 10 %
-- **Safety clamp**: CPU capped to [100m, 8000m], memory to [128Mi, 16384Mi]
-- **Requests**: set to 50 % of CPU limit and 70 % of memory limit
+Prometheus metrics sourced from the OpenTelemetry Java agent:
 
-### Optimizer bot — `optimizer/optimizer.py`
+| Metric | Label filter | Meaning |
+|--------|-------------|---------|
+| `petclinic_jvm_memory_used_bytes` | `jvm_memory_type="heap"` | Current heap usage |
+| `petclinic_jvm_memory_used_bytes` | `jvm_memory_type="non_heap"` | Metaspace + code cache |
 
-Environment variables (all optional, with sensible defaults):
+The metric name prefix (`petclinic_`) comes from the OTel Collector's Prometheus
+exporter `namespace` setting, which matches the container name by convention.
+
+### Surgical PR diffs with ruamel.yaml
+
+The optimizer patches manifests using **`ruamel.yaml`** instead of
+`PyYAML`, which preserves:
+
+- YAML comments
+- Original indentation and quoting style
+- Key order and blank lines
+
+The resulting PR diff contains only the lines that actually change
+(resources, `-Xmx`). Example from a real run:
+
+```diff
+-              value: "-Xmx512m"
++              value: "-Xmx135m"
+           resources:
+             requests:
+-              cpu: 500m
+-              memory: 1Gi
++              cpu: 50m
++              memory: 227Mi
+             limits:
+-              cpu: 2000m
+-              memory: 2Gi
++              cpu: 629m
++              memory: 319Mi
+```
+
+### Configurable analysis window
+
+The `ANALYSIS_WINDOW` env var controls how far back Prometheus looks when
+computing P95 CPU and peak JVM memory.
+
+| Value | Behaviour |
+|-------|-----------|
+| `5m`  | Reacts fast to traffic spikes; more volatile recommendations |
+| `30m` | Default — balances responsiveness and stability |
+| `1h`  | Stable, conservative — good for workloads with slow ramp-ups |
+
+### CronJob — environment variables
+
+All variables in `optimizer/k8s/cronjob.yaml`. Policy knobs live in Rego, not here.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PROMETHEUS_URL` | `http://kube-prometheus-stack-prometheus.monitoring:9090` | Prometheus API base URL |
-| `OPA_URL` | `http://opa.monitoring:8181` | OPA REST server URL |
-| `TARGET_NAMESPACE` | `microservices-demo` | Namespace of the Deployment |
-| `TARGET_DEPLOYMENT` | `petclinic` | Name of the Deployment |
-| `CONTAINER_NAME` | `petclinic` | Container name inside the pod |
-| `HEADROOM_MULTIPLIER` | `1.2` | Safety headroom factor passed to OPA |
-| `DRY_RUN` | `false` | Log decisions without applying patches |
+| `WORKLOAD` | `petclinic` | Maps to `resource/workloads/<value>.rego` in OPA |
+| `PROMETHEUS_URL` | `http://kube-prometheus-stack-prometheus.monitoring:9090` | Prometheus API |
+| `OPA_URL` | `http://opa.monitoring:8181` | OPA REST server |
+| `ANALYSIS_WINDOW` | `30m` | Look-back window for Prometheus queries |
+| `GITHUB_TOKEN` | *(from Secret)* | PAT with `repo` scope |
+| `GITHUB_REPO` | *(from Secret)* | `owner/repo` — auto-derived from `git remote` by `setup.sh` |
+| `GITHUB_BASE_BRANCH` | `master` | Branch the PR targets |
+| `DRY_RUN` | `false` | Log decisions without opening a PR |
 
-Set `DRY_RUN=true` in `optimizer/k8s/cronjob.yaml` to observe the loop without
-modifying live resources.
+---
+
+## Onboarding a new workload
+
+No changes to the CronJob, Python code, or master Rego are needed.
+The only step is creating a new per-workload Rego file:
+
+```bash
+cp optimizer/policy/workloads/petclinic.rego \
+   optimizer/policy/workloads/myapp.rego
+```
+
+Edit the new file — change `package`, `target`, and sizing knobs:
+
+```rego
+package resource.workloads.myapp
+
+policy_config = {
+    "target": {
+        "namespace":     "my-team-ns",
+        "deployment":    "myapp",
+        "container":     "myapp",
+        "manifest_path": "app/myapp.yaml",
+    },
+    "headroom_pct":        15,
+    "delta_threshold_pct": 5,
+    ...
+}
+
+result = r {
+    r = data.resource.optimizer.result with input.policy_config as policy_config
+}
+```
+
+Then rebuild the OPA ConfigMap (or re-run `setup.sh`):
+
+```bash
+kubectl create configmap opa-policies \
+  --from-file=resources.rego=optimizer/policy/resources.rego \
+  --from-file=myapp.rego=optimizer/policy/workloads/myapp.rego \
+  --namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl rollout restart deployment/opa -n monitoring
+```
+
+Launch the optimizer for the new workload:
+
+```bash
+kubectl create job -n monitoring --from=cronjob/resource-optimizer myapp-run \
+  --overrides='{"spec":{"template":{"spec":{"containers":[{"name":"optimizer","env":[{"name":"WORKLOAD","value":"myapp"}]}]}}}}'
+```
+
+---
+
+## Vision — the optimizer as a Platform Engineering component
+
+### The problem at scale
+
+In a typical organisation running dozens of microservices across multiple teams,
+Kubernetes resource allocation is decided once at initial deployment and rarely
+revisited. The result is a predictable pattern: **overprovisioning for safety**
+— services that consume 200 m CPU and 256 MiB are allocated 2 CPU and 2 Gi
+because nobody wants an OOM kill at 3 AM. Cluster utilisation rates of 10–20 %
+are common.
+
+The root cause is not negligence; it is **missing tooling and missing
+incentives**. Application teams don't have easy visibility into actual usage,
+and the cost of getting it wrong is asymmetric (too little → incident, too much
+→ waste that nobody notices).
+
+An autonomic optimization loop solves this at the platform level, removing the
+burden from individual teams while preserving their autonomy.
+
+### The target architecture
+
+A single shared optimizer infrastructure (Prometheus, OPA, CronJobs) serves
+multiple application teams. Each team owns only its Rego policy file — the
+rest is invisible to them.
+
+### Separation of concerns
+
+| Persona | Owns | Does NOT touch |
+|---------|------|----------------|
+| **Platform team** | `resources.rego` (master engine), OPA deployment, CronJob template, Prometheus | Per-workload Rego files, application manifests |
+| **SRE / App team** | `workloads/<name>.rego` — sizing knobs and target coordinates | Python code, master Rego, infrastructure |
+| **Developer** | Reviews and merges the optimizer PR — same as any code change | All of the above |
+
+This maps naturally to a GitOps workflow: the platform team manages the
+engine via their own repo; application teams manage their Rego in their own
+repo (or a shared `platform-policies` repo with CODEOWNERS per workload).
+
+### GitOps and human-in-the-loop
+
+The optimizer intentionally **does not patch the cluster directly**. Every
+sizing recommendation becomes a pull request:
+
+- Developers see the change in the same review tool they use for code
+- The diff is minimal and readable (5 lines, not 90)
+- CI can run validation (e.g. `kubeval`, `conftest`) before merge
+- Rejected PRs create a natural audit trail
+- A human can override any recommendation by closing the PR and adjusting
+  the Rego knobs
+
+For teams that want full automation, merging can be delegated to a bot
+(Renovate, Mergify) once the PR passes CI — the platform team controls the
+auto-merge policy centrally.
+
+### Policy as code — governance at scale
+
+OPA Rego policies are the governance layer. The platform team can encode
+organisation-wide constraints in the master `resources.rego` that no workload
+policy can override:
+
+```rego
+# Example platform-level guard in resources.rego
+# No workload can request more than 50 % of a node's allocatable CPU
+deny[msg] {
+    safe_cpu_m > 4000
+    not input.policy_config.oversize_approved
+    msg := "CPU limit exceeds 4000m — set oversize_approved=true in policy_config"
+}
+```
+
+Per-workload Rego files can only tune knobs within the bounds the platform
+allows. This is the key difference from traditional admission controllers:
+the constraints are **declared alongside the workload** and version-controlled
+with it, rather than being opaque cluster-wide webhook rules.
+
+### Multi-cluster and multi-environment
+
+The same architecture extends naturally to multiple clusters:
+
+- **One Prometheus per cluster** (already standard with kube-prometheus-stack)
+- **One OPA per cluster** or a centralised policy server shared across clusters
+- **One optimizer CronJob per workload per cluster**, with `ANALYSIS_WINDOW`
+  tuned per environment (e.g. `4h` in production, `15m` in staging)
+- PRs can target different branches (`main` for production, `staging` for
+  staging), with environment-specific Rego knobs
+
+### Feedback loops and continuous improvement
+
+Once the optimizer is running across a fleet, it produces a continuous stream
+of structured signals:
+
+```
+PR title: chore(optimizer): resize payments-service (2026-03-11T17:20)
+CPU: 2000m → 629m  (−68 %)
+MEM: 2Gi → 319Mi   (−85 %)
+```
+
+These signals can feed:
+- **Cost reporting**: aggregate all merged optimizer PRs to compute savings
+- **Anomaly detection**: a workload that suddenly needs a large upsize is a
+  signal worth alerting on, even before it causes an OOM
+- **Capacity planning**: trend the recommended values over weeks to predict
+  when a service will hit its class-of-service ceiling
+- **Policy tuning**: if a workload triggers a resize every run, tighten
+  `delta_threshold_pct`; if it never triggers, `headroom_pct` may be too high

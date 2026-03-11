@@ -25,6 +25,18 @@ spec:
       labels:
         app: opa
     spec:
+      # Copy ConfigMap files to a plain emptyDir to avoid OPA loading the same
+      # .rego file multiple times through Kubernetes' symlink directory structure.
+      initContainers:
+        - name: copy-policies
+          image: busybox:1.36
+          command: ["sh", "-c", "cp /cm/*.rego /policies/"]
+          volumeMounts:
+            - name: policies-cm
+              mountPath: /cm
+            - name: policies
+              mountPath: /policies
+
       containers:
         - name: opa
           image: openpolicyagent/opa:0.65.0
@@ -60,9 +72,11 @@ spec:
               port: 8181
             periodSeconds: 15
       volumes:
-        - name: policies
+        - name: policies-cm
           configMap:
             name: opa-policies
+        - name: policies
+          emptyDir: {}
 
 ---
 apiVersion: v1

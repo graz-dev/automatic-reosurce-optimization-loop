@@ -31,6 +31,7 @@ Environment variables — GitHub PR:
 """
 
 import base64
+import io
 import json
 import logging
 import os
@@ -39,7 +40,7 @@ import sys
 from datetime import datetime, timezone
 
 import requests
-import yaml
+from ruamel.yaml import YAML
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 
@@ -211,14 +212,19 @@ def get_metrics(is_java: bool) -> dict:
         raise RuntimeError("Could not retrieve CPU metrics from Prometheus.")
 
     if is_java:
+        # OTel Java agent exports jvm_memory_used_bytes; the Prometheus exporter
+        # in the OTel Collector prepends the workload name as a namespace prefix
+        # (e.g. "petclinic_jvm_memory_used_bytes").  The label is jvm_memory_type
+        # (not area) with values "heap" and "non_heap".
+        metric_prefix = ctr  # OTel collector namespace = container/service name
         heap_query = (
             f'max(max_over_time('
-            f'sum by (pod) (jvm_memory_used_bytes{{area="heap",namespace="{ns}"}})'
+            f'sum by (service_instance_id) ({metric_prefix}_jvm_memory_used_bytes{{jvm_memory_type="heap"}})'
             f'[{win}:1m]))'
         )
         offheap_query = (
             f'max(max_over_time('
-            f'sum by (pod) (jvm_memory_used_bytes{{area="nonheap",namespace="{ns}"}})'
+            f'sum by (service_instance_id) ({metric_prefix}_jvm_memory_used_bytes{{jvm_memory_type="non_heap"}})'
             f'[{win}:1m]))'
         )
         heap_bytes    = _prom_query(heap_query)
@@ -337,40 +343,54 @@ def _get_file(path: str, ref: str) -> tuple[str, str]:
     return base64.b64decode(data["content"]).decode("utf-8"), data["sha"]
 
 
-def _update_java_opts(container: dict, xmx_flag: str) -> None:
-    """Set or replace -Xmx in the JAVA_OPTS env var of a container dict."""
-    env = container.setdefault("env", [])
-    for entry in env:
-        if entry.get("name") == "JAVA_OPTS":
-            val = entry.get("value", "")
-            entry["value"] = (
-                re.sub(r"-Xmx\S+", xmx_flag, val)
-                if "-Xmx" in val
-                else f"{xmx_flag} {val}".strip()
-            )
-            return
-    env.append({"name": "JAVA_OPTS", "value": xmx_flag})
-
-
 def _patch_manifest(content: str, decision: dict, is_java: bool) -> str:
-    """Parse the YAML manifest, update resources (and JAVA_OPTS for JVM),
-    and return the serialised YAML string."""
-    docs = list(yaml.safe_load_all(content))
+    """Surgically patch only resource limits/requests (and JDK_JAVA_OPTIONS for
+    JVM workloads) in the manifest, preserving all comments and formatting.
+
+    Uses ruamel.yaml for a comment-preserving round-trip so the resulting PR
+    diff is minimal — only the changed values appear in the diff.
+    """
+    ryaml = YAML()
+    ryaml.preserve_quotes = True
+    ryaml.explicit_start = True   # keep `---` before every document
+    ryaml.width = 4096  # prevent unwanted line wrapping
+    # Match the 4-space list indentation used in the manifests:
+    #   key:
+    #     - item   (dash at column key+4, value at key+6)
+    ryaml.indent(mapping=2, sequence=4, offset=2)
+
+    docs = list(ryaml.load_all(content))
+
     for doc in docs:
         if not doc or doc.get("kind") != "Deployment":
             continue
-        containers = doc["spec"]["template"]["spec"]["containers"]
-        for ctr in containers:
+        for ctr in doc["spec"]["template"]["spec"]["containers"]:
             if ctr["name"] != CONTAINER_NAME:
                 continue
-            ctr["resources"] = {
-                "limits":   decision["new_limits"],
-                "requests": decision["new_requests"],
-            }
+
+            # ── resource limits & requests ─────────────────────────────────
+            ctr["resources"]["limits"]["cpu"]    = decision["new_limits"]["cpu"]
+            ctr["resources"]["limits"]["memory"] = decision["new_limits"]["memory"]
+            ctr["resources"]["requests"]["cpu"]    = decision["new_requests"]["cpu"]
+            ctr["resources"]["requests"]["memory"] = decision["new_requests"]["memory"]
+
+            # ── JVM heap cap via JDK_JAVA_OPTIONS ─────────────────────────
             if is_java and decision.get("max_heap_mib"):
-                _update_java_opts(ctr, f"-Xmx{decision['max_heap_mib']}m")
-    return yaml.dump_all(docs, default_flow_style=False, allow_unicode=True,
-                         explicit_start=True)
+                xmx = f"-Xmx{decision['max_heap_mib']}m"
+                for env_entry in ctr.get("env", []):
+                    if env_entry.get("name") in ("JDK_JAVA_OPTIONS", "JAVA_OPTS",
+                                                  "JAVA_TOOL_OPTIONS"):
+                        val = env_entry.get("value", "")
+                        env_entry["value"] = (
+                            re.sub(r"-Xmx\S+", xmx, val)
+                            if "-Xmx" in val
+                            else f"{val} {xmx}".strip()
+                        )
+                        break
+
+    buf = io.StringIO()
+    ryaml.dump_all(docs, buf)
+    return buf.getvalue()
 
 
 def open_github_pr(decision: dict, is_java: bool) -> str:

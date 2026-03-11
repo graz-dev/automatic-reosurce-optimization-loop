@@ -9,9 +9,11 @@ name: resource-optimizer
 
 nodes:
   - role: control-plane
+    image: kindest/node:v1.32.0
 
   # Worker for the target application (Spring PetClinic)
   - role: worker
+    image: kindest/node:v1.32.0
     kubeadmConfigPatches:
       - |
         kind: JoinConfiguration
@@ -21,6 +23,7 @@ nodes:
 
   # Worker for tooling: K6 load test + Resource Optimizer CronJob
   - role: worker
+    image: kindest/node:v1.32.0
     kubeadmConfigPatches:
       - |
         kind: JoinConfiguration

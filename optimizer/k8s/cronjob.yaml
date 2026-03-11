@@ -39,7 +39,7 @@ spec:
                 - install
                 - "requests==2.32.3"
                 - "kubernetes==29.0.0"
-                - "PyYAML==6.0.1"
+                - "ruamel.yaml==0.18.6"
                 - "--target=/deps"
                 - "--quiet"
               volumeMounts:

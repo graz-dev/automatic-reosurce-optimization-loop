@@ -48,4 +48,7 @@ policy_config = {
 # Evaluates the master sizing rules with this workload's policy_config injected
 # via the `with` override — the rest of `input` (metrics, current_limits,
 # is_java) flows through unchanged from the HTTP request.
-result = data.resource.optimizer.result with input.policy_config as policy_config
+# Note: `with` is only valid inside a rule body, not in a rule head.
+result = r {
+    r = data.resource.optimizer.result with input.policy_config as policy_config
+}

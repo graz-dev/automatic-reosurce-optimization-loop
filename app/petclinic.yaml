@@ -40,7 +40,7 @@ spec:
         node-role: app
       containers:
         - name: petclinic
-          image: ghcr.io/graz-dev/spring-petclinic-jdk25:0.1.0
+          image: ghcr.io/graz-dev/spring-petclinic-jdk25:0.2.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
