@@ -1,0 +1,37 @@
+---
+# Kind cluster configuration for the Resource Optimization Loop demo.
+# Creates 3 nodes: 1 control-plane + 2 workers with distinct role labels.
+# The local registry mirror is pre-configured so Kind workers can pull
+# images pushed to localhost:5001.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: resource-optimizer
+
+nodes:
+  - role: control-plane
+
+  # Worker for the target application (Spring PetClinic)
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "node-role=app"
+
+  # Worker for tooling: K6 load test + Resource Optimizer CronJob
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "node-role=tools"
+
+# Configure containerd so each node resolves the local registry
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+        [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]
+          endpoint = ["http://local-registry:5000"]

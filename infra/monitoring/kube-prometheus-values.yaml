@@ -1,0 +1,59 @@
+# Helm values for kube-prometheus-stack
+# Installs Prometheus + Grafana; scrapes the OTel Collector metrics endpoint.
+#
+# Install command (run by setup.sh):
+#   helm upgrade --install kube-prometheus-stack \
+#     prometheus-community/kube-prometheus-stack \
+#     -n monitoring --values infra/monitoring/kube-prometheus-values.yaml
+
+prometheus:
+  prometheusSpec:
+    scrapeInterval: "15s"
+    evaluationInterval: "15s"
+    retention: "7d"
+    # Scrape the OpenTelemetry Collector's Prometheus exporter endpoint.
+    # The OTel Collector re-exposes JVM and HTTP metrics emitted by PetClinic.
+    additionalScrapeConfigs:
+      - job_name: "otel-collector"
+        scrape_interval: "15s"
+        static_configs:
+          - targets: ["otel-collector.monitoring:8889"]
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: job
+            replacement: otel-collector
+
+grafana:
+  enabled: true
+  adminPassword: "admin"
+  defaultDashboardsEnabled: true
+
+# Disable AlertManager for the demo to reduce resource usage
+alertmanager:
+  enabled: false
+
+# Keep default recording/alerting rules minimal
+defaultRules:
+  create: true
+  rules:
+    alertmanager: false
+    etcd: false
+    configReloaders: false
+    general: true
+    kubeApiserverAvailability: false
+    kubeApiserverBurnrate: false
+    kubeApiserverHistogram: false
+    kubeApiserverSlos: false
+    kubeControllerManager: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeStateMetrics: true
+    kubelet: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: false
+    kubernetesSystem: false
+    nodeExporterAlerting: false
+    nodeExporterRecording: true
+    prometheusOperator: false

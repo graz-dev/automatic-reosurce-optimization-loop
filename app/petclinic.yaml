@@ -1,0 +1,93 @@
+---
+# Spring Framework PetClinic — OTel-instrumented Deployment
+# The image bundles the OpenTelemetry Java agent; metrics are exported via
+# OTLP/HTTP to the OTel Collector running in the monitoring namespace.
+apiVersion: v1
+kind: Service
+metadata:
+  name: petclinic
+  namespace: microservices-demo
+  labels:
+    app: petclinic
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  selector:
+    app: petclinic
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: petclinic
+  namespace: microservices-demo
+  labels:
+    app: petclinic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: petclinic
+  template:
+    metadata:
+      labels:
+        app: petclinic
+    spec:
+      nodeSelector:
+        node-role: app
+      containers:
+        - name: petclinic
+          image: ghcr.io/graz-dev/spring-petclinic-jdk25:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            # OTel — export JVM + HTTP metrics to the in-cluster OTel Collector
+            - name: OTEL_SERVICE_NAME
+              value: "petclinic"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.monitoring:4318"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "5000"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "none"
+            - name: OTEL_TRACES_EXPORTER
+              value: "none"
+            # JVM — cap heap so the optimizer can observe meaningful limits
+            - name: JDK_JAVA_OPTIONS
+              value: "-Xmx512m"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+          startupProbe:
+            httpGet:
+              path: /owners/find
+              port: 8080
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /owners/find
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /owners/find
+              port: 8080
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3

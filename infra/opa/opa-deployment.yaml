@@ -1,0 +1,82 @@
+---
+# Open Policy Agent — standalone REST server
+# All Rego files are mounted from the 'opa-policies' ConfigMap
+# (created by setup.sh from optimizer/policy/**/*.rego).
+#
+# Per-workload endpoint pattern used by the optimizer:
+#   POST http://opa.monitoring:8181/v1/data/resource/workloads/<name>/result
+#
+# Each workload policy defines its own knobs and delegates to the master:
+#   resource/optimizer (resources.rego)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa
+  namespace: monitoring
+  labels:
+    app: opa
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa
+  template:
+    metadata:
+      labels:
+        app: opa
+    spec:
+      containers:
+        - name: opa
+          image: openpolicyagent/opa:0.65.0
+          args:
+            - "run"
+            - "--server"
+            - "--addr=0.0.0.0:8181"
+            - "--log-format=json"
+            - "--log-level=info"
+            - "/policies"
+          ports:
+            - containerPort: 8181
+              name: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: policies
+              mountPath: /policies
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            periodSeconds: 15
+      volumes:
+        - name: policies
+          configMap:
+            name: opa-policies
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa
+  namespace: monitoring
+  labels:
+    app: opa
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8181
+      targetPort: 8181
+      name: http
+  selector:
+    app: opa

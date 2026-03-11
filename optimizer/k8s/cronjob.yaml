@@ -1,0 +1,102 @@
+---
+# Resource Optimizer CronJob
+# Runs every 30 minutes in the monitoring namespace.
+#
+# The Python script is mounted from the 'optimizer-script' ConfigMap.
+# Dependencies are installed by an init-container into a shared emptyDir.
+#
+# Policy knobs (headroom, thresholds, clamps) live in the per-workload Rego
+# policies under optimizer/policy/workloads/ — NOT here.
+# GitHub PR credentials are injected from the 'optimizer-github' Secret.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: resource-optimizer
+  namespace: monitoring
+  labels:
+    app: resource-optimizer
+spec:
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: resource-optimizer
+        spec:
+          serviceAccountName: resource-optimizer
+          restartPolicy: OnFailure
+
+          initContainers:
+            - name: install-deps
+              image: python:3.11-slim
+              command:
+                - pip
+                - install
+                - "requests==2.32.3"
+                - "kubernetes==29.0.0"
+                - "PyYAML==6.0.1"
+                - "--target=/deps"
+                - "--quiet"
+              volumeMounts:
+                - name: deps
+                  mountPath: /deps
+
+          containers:
+            - name: optimizer
+              image: python:3.11-slim
+              command: ["python", "/scripts/optimizer.py"]
+              env:
+                - name: PYTHONPATH
+                  value: "/deps"
+
+                # ── Infrastructure ───────────────────────────────────────────
+                - name: PROMETHEUS_URL
+                  value: "http://kube-prometheus-stack-prometheus.monitoring:9090"
+                - name: OPA_URL
+                  value: "http://opa.monitoring:8181"
+                - name: WORKLOAD          # maps to resource/workloads/<value>.rego
+                  value: "petclinic"
+                - name: ANALYSIS_WINDOW
+                  value: "30m"
+
+                # ── GitHub PR ────────────────────────────────────────────────
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: optimizer-github
+                      key: token
+                - name: GITHUB_REPO
+                  valueFrom:
+                    secretKeyRef:
+                      name: optimizer-github
+                      key: repo
+                - name: GITHUB_BASE_BRANCH
+                  value: "master"
+
+                - name: DRY_RUN
+                  value: "false"
+
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                - name: deps
+                  mountPath: /deps
+
+          volumes:
+            - name: scripts
+              configMap:
+                name: optimizer-script
+            - name: deps
+              emptyDir: {}

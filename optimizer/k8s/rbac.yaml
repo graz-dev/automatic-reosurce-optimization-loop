@@ -1,0 +1,35 @@
+---
+# ServiceAccount for the Resource Optimizer CronJob
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: resource-optimizer
+  namespace: monitoring
+
+---
+# ClusterRole: read Deployments cluster-wide, patch target Deployment
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: resource-optimizer
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: resource-optimizer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: resource-optimizer
+subjects:
+  - kind: ServiceAccount
+    name: resource-optimizer
+    namespace: monitoring

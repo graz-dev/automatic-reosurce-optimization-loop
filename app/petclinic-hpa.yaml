@@ -1,0 +1,24 @@
+---
+# Horizontal Pod Autoscaler for Spring PetClinic
+# Scales replicas based on CPU utilisation (target 50 %).
+# Works alongside the Resource Optimizer: HPA handles replica count,
+# the Optimizer handles right-sizing individual pod resource limits.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: petclinic
+  namespace: microservices-demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: petclinic
+  minReplicas: 1
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50

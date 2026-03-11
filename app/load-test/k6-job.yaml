@@ -1,0 +1,49 @@
+---
+# K6 Load Test Job
+# Runs the diurnal test script (app/load-test/k6-diurnal.js) as a Kubernetes Job.
+#
+# The script is loaded from the 'k6-script' ConfigMap, created by setup.sh:
+#   kubectl create configmap k6-script \
+#     --from-file=script.js=app/load-test/k6-diurnal.js \
+#     -n microservices-demo
+#
+# To re-run the test after it completes:
+#   kubectl delete job k6-load-test -n microservices-demo
+#   kubectl apply -f app/load-test/k6-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-load-test
+  namespace: microservices-demo
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      nodeSelector:
+        node-role: tools
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:0.51.0
+          args: ["run", "/scripts/script.js"]
+          env:
+            - name: BASE_URL
+              value: "http://petclinic.microservices-demo:8080"
+            - name: PEAK_MULTIPLIER
+              value: "1.0"
+            - name: CYCLE_MINUTES
+              value: "10"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          volumeMounts:
+            - name: k6-script
+              mountPath: /scripts
+      volumes:
+        - name: k6-script
+          configMap:
+            name: k6-script
