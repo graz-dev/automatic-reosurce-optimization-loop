@@ -17,7 +17,6 @@ spec:
       name: http
   selector:
     app: petclinic
-
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -61,14 +60,14 @@ spec:
               value: "none"
             # JVM — cap heap so the optimizer can observe meaningful limits
             - name: JDK_JAVA_OPTIONS
-              value: "-Xmx512m"
+              value: "-Xmx169m"
           resources:
             requests:
-              cpu: 500m
-              memory: 1Gi
+              cpu: 257m
+              memory: 234Mi
             limits:
-              cpu: 2000m
-              memory: 2Gi
+              cpu: 513m
+              memory: 334Mi
           startupProbe:
             httpGet:
               path: /owners/find
